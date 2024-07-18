@@ -1,0 +1,8 @@
+r.stream.order
+Stream network order
+Raster (r.*)
+QgsProcessingParameterRasterLayer|stream_ras|Streams raster (preferably from 'r.stream.extract')|None|False
+QgsProcessingParameterRasterLayer|direction|Flow direction raster|None|False
+*QgsProcessingParameterNumber|memory|Maximum memory to be used (in MB)|QgsProcessingParameterNumber.Integer|300|True|0|None
+QgsProcessingParameterRasterDestination|strahler|strahler|None|True
+

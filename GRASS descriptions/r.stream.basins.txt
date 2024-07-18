@@ -1,0 +1,9 @@
+r.stream.basins
+Stream basin extraction
+Raster (r.*)
+QgsProcessingParameterRasterLayer|direction|Flow direction raster|None|False
+QgsProcessingParameterRasterLayer|stream_raster|Streams raster (preferably from 'r.stream.extract')|None|True
+QgsProcessingParameterFeatureSource|points|Pour points layer|-1|None|True
+*QgsProcessingParameterNumber|memory|Maximum memory to be used (in MB)|QgsProcessingParameterNumber.Integer|300|True|0|None
+QgsProcessingParameterRasterDestination|basins|Output basins raster map|None|True
+
