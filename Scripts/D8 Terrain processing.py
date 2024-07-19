@@ -50,11 +50,14 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterRasterDestination('OutputFillDEM', 'Output Fill DEM'))
         self.addParameter(QgsProcessingParameterRasterDestination('OutputHshd', 'Output Hillshade'))
         self.addParameter(QgsProcessingParameterNumber('ZFactor', 'Z Factor', type=QgsProcessingParameterNumber.Double, minValue=0.0, defaultValue=1))
+        self.addParameter(QgsProcessingParameterRasterDestination('OutputFlowAcc', 'Output Flow Accumulation'))
+
 
     def processAlgorithm(self, parameters, context, feedback):
         # Get parameter values
         dem = self.parameterAsRasterLayer(parameters, 'DEM', context)
         output_fill_dem = self.parameterAsOutputLayer(parameters, 'OutputFillDEM', context)
+        output_flow_acc = self.parameterAsOutputLayer(parameters, 'OutputFlowAcc', context)       
         output_hillshade = self.parameterAsOutputLayer(parameters, 'OutputHshd', context)
         z_factor = self.parameterAsDouble(parameters, 'ZFactor', context)
         
@@ -68,7 +71,16 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
             'FILLED': output_fill_dem,
             }, context=context, feedback=feedback)["FILLED"]
 
-
+            # Calculate Flow Accumulation
+            output_flow_acc = processing.run("grass7:r.watershed", {
+                'elevation': output_fill_dem,
+                'threshold': 500000,
+                'memory': 3000,
+                '-s': True,
+                '-a': True,
+                'accumulation': output_flow_acc
+            }, context=context, feedback=feedback)["accumulation"]
+        
             # Calculate Hillshade
             output_hillshade = processing.run("native:hillshade", {
             'INPUT': output_fill_dem,
@@ -81,5 +93,6 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
         # Return results
         return {
             'OutputFillDEM': output_fill_dem,
-            'OutputHshd': output_hillshade
+            'OutputHshd': output_hillshade,
+            'OutputFlowAcc': output_flow_acc
         }
