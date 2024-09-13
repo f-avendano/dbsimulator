@@ -31,7 +31,7 @@ class ManualCutterAlgorithm(QgsProcessingAlgorithm):
         return 'Manual Cutter'
 
     def displayName(self):
-        return 'Manual Cutter'
+        return '4) Manual Cutter'
 
     def group(self):
         return 'DB simulator'
@@ -55,7 +55,7 @@ class ManualCutterAlgorithm(QgsProcessingAlgorithm):
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterVectorLayer('CutLines', 'Cut Lines'))
         #self.addParameter(QgsProcessingParameterVectorLayer('DamLines', 'Dam Lines', optional=True))
-        self.addParameter(QgsProcessingParameterRasterLayer('DEM', 'Filled DEM Raster'))
+        self.addParameter(QgsProcessingParameterRasterLayer('DEM', 'Unfilled DEM Raster'))
         self.addParameter(QgsProcessingParameterRasterDestination('OutputNewDEM', 'Output New DEM'))
         self.addParameter(QgsProcessingParameterRasterDestination('OutputFillDEM', 'Output New Filled DEM'))
         self.addParameter(QgsProcessingParameterRasterDestination('OutputFlowAcc', 'Output Flow Accumulation'))
@@ -143,11 +143,25 @@ class ManualCutterAlgorithm(QgsProcessingAlgorithm):
             output_new_dem = dem
 
         # Fill the NewDEM
-        output_fill_dem = processing.run("saga:fillsinksxxlwangliu", {
+        output_filldem = processing.run("saga:fillsinksxxlwangliu", {
             'ELEV': output_new_dem,
             'MINSLOPE':0.0,
-            'FILLED': output_fill_dem,
+            'FILLED': 'TEMPORARY_OUTPUT',
         }, context=context, feedback=feedback)["FILLED"]
+
+        ##reprojection
+        
+        filled_dem = processing.run(
+            'gdal:warpreproject',
+            {
+            'INPUT': output_filldem,
+            'TARGET_CRS' : dem.crs(),
+            'RESAMPLING' : 0,
+            'TARGET_RESOLUTION' : 1,
+            'OUTPUT': output_fill_dem
+            },
+            context=context, feedback=feedback)["OUTPUT"]
+
 
         # Calculate Flow Accumulation
         output_flow_acc = processing.run("grass7:r.watershed", {
@@ -172,7 +186,7 @@ class ManualCutterAlgorithm(QgsProcessingAlgorithm):
         # Return results
         return {
             'OutputNewDEM': output_new_dem,
-            'OutputFillDEM': output_fill_dem,
+            'OutputFillDEM': filled_dem,
             'OutputFlowAcc': output_flow_acc,
             'OutputHshd': output_hillshade
         }

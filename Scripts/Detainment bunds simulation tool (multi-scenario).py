@@ -9,6 +9,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingOutputRasterLayer,
                        QgsProcessingParameterVectorLayer,
                        QgsProcessingParameterFeatureSink,
+                       QgsProcessingParameterString,
                        QgsFeatureSink,
                        QgsProcessingParameterField,
                        QgsProcessingParameterNumber,
@@ -31,6 +32,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterVectorDestination)
 from datetime import datetime
 from qgis.utils import iface
+from collections import defaultdict
 import math
 
 
@@ -42,10 +44,10 @@ class DBs(QgsProcessingAlgorithm):
         return QCoreApplication.translate('Processing', string)
         
     def name(self):
-        return 'DBs'
+        return 'DBs multiscenario'
 
     def displayName(self):
-        return '7a) Detainment bunds simulation tool (single scenario)'
+        return '7b) Detainment bunds simulation tool (multi-scenario)'
 
     def group(self):
         return 'DB simulator'
@@ -82,8 +84,8 @@ class DBs(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterVectorLayer('StreamReach', 'Stream reach or vector with perennial streams', types=[QgsProcessing.TypeVectorLine])) #or order
         self.addParameter(QgsProcessingParameterVectorLayer('CatchmentBoundary', 'Catchment boundary'))
         self.addParameter(QgsProcessingParameterNumber('Spacing', 'Point spacing (m) to simulate detainment bunds', QgsProcessingParameterNumber.Integer, defaultValue=60))
-        self.addParameter(QgsProcessingParameterNumber('Height', 'Detainment bund height (m)', QgsProcessingParameterNumber.Integer, defaultValue=3))
-        self.addParameter(QgsProcessingParameterNumber('Length', 'Detainment bund length (m)', QgsProcessingParameterNumber.Integer, defaultValue=20))
+        self.addParameter(QgsProcessingParameterString('Height','Detainment bund heights (m) (comma-separated) to simulate detainment bunds ',defaultValue='2,3,4'))
+        self.addParameter(QgsProcessingParameterString('Length', 'Detainment bund lengths (m) (comma-separated)to simulate detainment bunds ',defaultValue='20,30'))
         
         self.addParameter(QgsProcessingParameterBoolean('Checkbox2','''
     Eliminate DBs that are too incised (> twice the height of DB)?
@@ -104,8 +106,8 @@ class DBs(QgsProcessingAlgorithm):
         stream_reach = self.parameterAsVectorLayer(parameters, 'StreamReach', context)
         catchment = self.parameterAsVectorLayer(parameters, 'CatchmentBoundary', context)
         spacing=self.parameterAsDouble(parameters,'Spacing', context)
-        height=self.parameterAsDouble(parameters,'Height', context)
-        length=self.parameterAsDouble(parameters,'Length', context)
+        height_str = self.parameterAsString(parameters, 'Height', context)
+        length_str=self.parameterAsString(parameters,'Length', context)
         z_factor=self.parameterAsDouble(parameters,'Z', context)
         out_db = self.parameterAsOutputLayer(parameters, 'PotentialDB', context)
         points = self.parameterAsOutputLayer(parameters, 'OutPoints', context)
@@ -173,7 +175,7 @@ class DBs(QgsProcessingAlgorithm):
         
         clipped= processing.run(
             "native:clip",{
-            'INPUT': vector,
+            'INPUT': vector, ##was vector,
             'OVERLAY': catchment,
             'OUTPUT':'TEMPORARY_OUTPUT'},context=context,feedback=feedback)['OUTPUT']
         
@@ -188,12 +190,19 @@ class DBs(QgsProcessingAlgorithm):
             'VALUE':1,
             'OUTPUT':'TEMPORARY_OUTPUT'},context=context,feedback=feedback)['OUTPUT']
         
+        isAG2= processing.run(
+            "native:fixgeometries",{
+            'INPUT': isAG1,
+            'OUTPUT':'TEMPORARY_OUTPUT'},context=context,feedback=feedback)['OUTPUT']
+        
+        
+        
         #Clip network by isAG
         
         clipped2= processing.run(
             "native:clip",{
             'INPUT': clipped,
-            'OVERLAY': isAG1,
+            'OVERLAY': isAG2,
             'OUTPUT':'TEMPORARY_OUTPUT'},context=context,feedback=feedback)['OUTPUT']
         
         
@@ -274,7 +283,7 @@ class DBs(QgsProcessingAlgorithm):
             'FORMULA':"azimuth(start_point($geometry), end_point($geometry)) * (180/pi())", #* (180/pi()) is to convert from radians to degrees
             'OUTPUT': dir}, context=context, feedback=feedback)['OUTPUT']
 
-
+        
         diss = QgsProcessingUtils.generateTempFilename('diss.shp')
         
         dissolved4_path= processing.run(
@@ -286,7 +295,13 @@ class DBs(QgsProcessingAlgorithm):
         dissolved4 = QgsVectorLayer(dissolved4_path, "Dissolved Layer", "ogr")
 
 
-        feedback.pushInfo(f'--------- Creating points every {spacing} m apart in ephemeral/intermittent streams -----------------------------')
+        feedback.pushInfo(f'''
+        
+        
+        --------- Creating points every {spacing} m apart in ephemeral/intermittent streams -----------------------------
+        
+        
+        ''')
 
         ###THIS FUCTION CALCULATES DISTANCE BETWEEN TWO LINE FEATURE'S VERTEX AND CREATES POINTS SPACED AT PREDEFINED DISTANCE
 
@@ -351,12 +366,7 @@ class DBs(QgsProcessingAlgorithm):
         
             
             
-        ###CREATION OF TRANSECTS AND DETAINMENT BUNDS
-        
-        # Conversion of height to same units as DEM and creatinf an ID field
-        
-        DB_height= height/z_factor
-        
+        ###CREATION OF TRANSECTS AND DETAINMENT BUNDS        
         
         ID = processing.run("native:fieldcalculator", { 
             'INPUT': temp_path,
@@ -488,18 +498,52 @@ class DBs(QgsProcessingAlgorithm):
         }, context=context, feedback=feedback)['OUTPUT']        
         
         
+        feedback.pushInfo('''
         
-        #Creating reach ID field and append each unique "LINKNO" to ReachList as a string
+        ----------- Duplicating points per height -------------------
+        
+        ''')
+        
+        heights = [float(h.strip()) for h in height_str.split(',')]
+        
+        # Create a new layer to store the results
+        output_layer = QgsVectorLayer("Point?crs=" + sorted.crs().toWkt(), "DuplicatedPoints", "memory")
+        provider = output_layer.dataProvider()
+
+        # Add fields from the original layer
+        provider.addAttributes(sorted.fields().toList())
+        # Add a new field for height
+        provider.addAttributes([QgsField("Height (m)", QVariant.Int)])
+        output_layer.updateFields()
+        
+        
+        # Loop through each height and duplicate points
+        for height in heights:
+            for feature in sorted.getFeatures():
+                new_feature = QgsFeature(output_layer.fields())
+                new_feature.setGeometry(feature.geometry())
+                new_feature.setAttributes(feature.attributes() + [height])
+                provider.addFeature(new_feature)
+
+        # Update the layer
+        output_layer.updateExtents()
+
+        # Save the new layer to the final output
+        QgsVectorFileWriter.writeAsVectorFormat(output_layer, points, 'utf-8', output_layer.crs(), 'ESRI Shapefile')
+
+        
+        
+        #Creating reach ID field and append each unique ID to ReachList as a string
         
         ReachList = []
-        for feature in sorted.getFeatures():
+        for feature in output_layer.getFeatures():
             reach_id = feature['Reach']
             if reach_id not in ReachList:
                 ReachList.append(reach_id)
                 
         
         # # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(sorted, points, 'utf-8', selected.crs(), 'ESRI Shapefile')        
+        QgsVectorFileWriter.writeAsVectorFormat(output_layer, points, 'utf-8', selected.crs(), 'ESRI Shapefile')
         
         
         # Delete points where elevation drop is insufficient
@@ -508,39 +552,114 @@ class DBs(QgsProcessingAlgorithm):
         ----------- Deleting points with an elevation drop between itself and the next upstream point less than the DB impoundment height -------------------
         
         ''')
+        
+        
+        
+        # Group points by their height
+        height_groups = defaultdict(list)
+        
+        for feature in output_layer.getFeatures():
+            height = feature['Height (m)']
+            height_groups[height].append(feature)
 
-        for Reach in ReachList:
-            UpElev = float('inf')
+        # Process each height group separately
+        for height, features in height_groups.items():
+            feedback.pushInfo(f'''
+            ----------- Processing height group: {height} m -------------------
+            ''')
             
-            sorted.startEditing()
-            for feature in sorted.getFeatures():
-                if feature['Reach'] != Reach:
-                    continue
-                CurrentElev = feature['Elevation'] + height
-                if CurrentElev < UpElev:
-                    UpElev = feature['Elevation']
-                else:
-                    sorted.deleteFeature(feature.id())
-            sorted.commitChanges()
+            for Reach in ReachList:
+                UpElev = float('inf')
+                
+                output_layer.startEditing()
+                for feature in features:
+                    if feature['Reach'] != Reach:
+                        continue
+                    CurrentElev = feature['Elevation'] + height
+                    if CurrentElev < UpElev:
+                        UpElev = feature['Elevation']
+                    else:
+                        output_layer.deleteFeature(feature.id())
+                output_layer.commitChanges()
 
         # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(sorted, points, 'utf-8', selected.crs(), 'ESRI Shapefile')
+        QgsVectorFileWriter.writeAsVectorFormat(output_layer, points, 'utf-8', selected.crs(), 'ESRI Shapefile')
+
+
+        feedback.pushInfo('''
+        
+        ----------- Creating points per length -------------------
+        
+        ''')
+
+
+        # Get lengths from the input parameter
+        lengths = [float(l.strip()) for l in length_str.split(',')]
+
+        # Create a new layer to store the results
+        output_layer2 = QgsVectorLayer("Point?crs=" + sorted.crs().toWkt(), "DuplicatedPoints", "memory")
+        provider = output_layer2.dataProvider()
+
+        # Add fields from the original layer
+        provider.addAttributes(output_layer.fields().toList())
+        # Add a new field for length
+        provider.addAttributes([QgsField("Length (m)", QVariant.Int)])
+        output_layer2.updateFields()
         
         
-        #Add and populate "Height" field
-        
-        
-        height_field = processing.run("native:fieldcalculator", {
-            'INPUT': sorted,
-            'FIELD_NAME': "Height (m)",
+        # Loop through each length and duplicate points
+        for length in lengths:
+            for feature in output_layer.getFeatures():
+                new_feature = QgsFeature(output_layer2.fields())
+                new_feature.setGeometry(feature.geometry())
+                new_feature.setAttributes(feature.attributes() + [length])
+                provider.addFeature(new_feature)
+
+        # Update the layer
+        output_layer2.updateExtents()
+
+        # Save the new layer to the final output
+        QgsVectorFileWriter.writeAsVectorFormat(output_layer2, points, 'utf-8', output_layer.crs(), 'ESRI Shapefile')
+
+
+        ##CREATING LINES FROM POINTS
+
+        # Function to create perpendicular lines
+        def create_perpendicular_line(point, distance, angle):
+            angle_rad = math.radians(angle)
+            dx = distance * math.cos(angle_rad)
+            dy = distance * math.sin(angle_rad)
+            end_point = QgsPointXY(point.x() + dx, point.y() + dy)
+            return QgsGeometry.fromPolylineXY([point, end_point])
+
+        id = QgsProcessingUtils.generateTempFilename('id.shp')
+
+        ID2 = processing.run("native:fieldcalculator", { 
+            'INPUT': output_layer2,
+            'FIELD_NAME': "DB_ID",
             'FIELD_TYPE': 1, 
-            'FORMULA': f'{height}',
+            'FORMULA': "@id",
             'OUTPUT': 'TEMPORARY_OUTPUT'
-            }, context=context, feedback=feedback)['OUTPUT']        
+            }, context=context, feedback=feedback)['OUTPUT']
+
+        QgsVectorFileWriter.writeAsVectorFormat(ID2, points, 'utf-8', output_layer.crs(), 'ESRI Shapefile')
+
+        crs = ID2.crs().toWkt()  # Ensure CRS is set correctly
+        loffset_layer = QgsVectorLayer(f'LineString?crs={crs}', 'loffset', 'memory')
+        roffset_layer = QgsVectorLayer(f'LineString?crs={crs}', 'roffset', 'memory')
+        loffset_provider = loffset_layer.dataProvider()
+        roffset_provider = roffset_layer.dataProvider()
+
+        # Add attributes from the original layer
+        loffset_provider.addAttributes(ID2.fields().toList())
+        roffset_provider.addAttributes(ID2.fields().toList())
+        loffset_layer.updateFields()
+        roffset_layer.updateFields()
+
         
-        
-        Compass_A_points=processing.run("native:joinattributestable", {
-            'INPUT': height_field,
+        # Proceed with the join
+        Compass_A_points = processing.run("native:joinattributestable", {
+            'INPUT': ID2,
             'FIELD': 'Reach',
             'INPUT_2': Direction_CompassA,
             'FIELD_2': 'LINKNO',
@@ -548,7 +667,7 @@ class DBs(QgsProcessingAlgorithm):
             'METHOD': 0,
             'DISCARD_NONMATCHING': False,
             'OUTPUT': 'TEMPORARY_OUTPUT'
-        }, context=context, feedback=feedback)['OUTPUT']        
+        }, context=context, feedback=feedback)['OUTPUT']
         
         
         L_perp = processing.run("native:fieldcalculator", {
@@ -557,63 +676,80 @@ class DBs(QgsProcessingAlgorithm):
             'FIELD_TYPE': 0, 
             'FORMULA': "((360-Azimuth))",
             'OUTPUT': 'TEMPORARY_OUTPUT'
-            }, context=context, feedback=feedback)['OUTPUT']
-        
+        }, context=context, feedback=feedback)['OUTPUT']
+
         R_perp = processing.run("native:fieldcalculator", {
             'INPUT': L_perp,
             'FIELD_NAME': "R_perp",
             'FIELD_TYPE': 0, 
             'FORMULA': "(360-Azimuth)+180",
             'OUTPUT': 'TEMPORARY_OUTPUT'
-            }, context=context, feedback=feedback)['OUTPUT']
-        
-        
-      # Create output layers for left and right lines
-        loffset_layer = QgsVectorLayer('LineString?crs=', 'loffset', 'memory')
-        roffset_layer = QgsVectorLayer('LineString?crs=', 'roffset', 'memory')
-        loffset_provider = loffset_layer.dataProvider()
-        roffset_provider = roffset_layer.dataProvider()
-        
-        loffset_provider.addAttributes([QgsField("DB_ID", QVariant.Int)])
-        roffset_provider.addAttributes([QgsField("DB_ID", QVariant.Int)])
-        loffset_layer.updateFields()
-        roffset_layer.updateFields()
+        }, context=context, feedback=feedback)['OUTPUT']
 
         # Create lines based on the angles
-        def create_perpendicular_line(point, distance, angle):
-            angle_rad = math.radians(angle)
-            dx = distance * math.cos(angle_rad)
-            dy = distance * math.sin(angle_rad)
-            end_point = QgsPointXY(point.x() + dx, point.y() + dy)
-            return QgsGeometry.fromPolylineXY([point, end_point])
-
-
         for feature in R_perp.getFeatures():
             geom = feature.geometry()
-            point = geom.asPoint()
-            l_angle = feature['L_perp']
-            r_angle = feature['R_perp']
+            if geom.isMultipart():
+                points = geom.asMultiPoint()
+            else:
+                points = [geom.asPoint()]
             
-            # Left line
-            l_line = create_perpendicular_line(point, (length / 2), l_angle)
-            l_feature = QgsFeature()
-            l_feature.setGeometry(l_line)
-            l_feature.setAttributes([feature['DB_ID']])
-            loffset_provider.addFeature(l_feature)
+            for point in points:
+                l_angle = feature['L_perp']
+                r_angle = feature['R_perp']
 
-            # Right line
-            r_line = create_perpendicular_line(point, (length / 2), r_angle)
-            r_feature = QgsFeature()
-            r_feature.setGeometry(r_line)
-            r_feature.setAttributes([feature['DB_ID']])
-            roffset_provider.addFeature(r_feature)
+                for length in lengths:
+                    # Left line
+                    l_line = create_perpendicular_line(point, (length / 2), l_angle)
+                    l_feature = QgsFeature(loffset_layer.fields())
+                    l_feature.setGeometry(l_line)
+                    l_feature.setAttributes(feature.attributes())
+                    loffset_provider.addFeature(l_feature)
+
+                    # Right line
+                    r_line = create_perpendicular_line(point, (length / 2), r_angle)
+                    r_feature = QgsFeature(roffset_layer.fields())
+                    r_feature.setGeometry(r_line)
+                    r_feature.setAttributes(feature.attributes())
+                    roffset_provider.addFeature(r_feature)
 
         loffset_layer.updateExtents()
         roffset_layer.updateExtents()
+        
 
+        #FIELD CALCULATOR FOR LENGTH AND DELETE NOT EQUAL TO.
 
+        loffset_calc=processing.run("native:fieldcalculator", {
+            'INPUT':loffset_layer, 
+            'FIELD_NAME': "length",
+            'FIELD_TYPE': 1, 
+            'FORMULA':"2*length(@geometry)",
+            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
+
+        roffset_calc=processing.run("native:fieldcalculator", {
+            'INPUT':roffset_layer, 
+            'FIELD_NAME': "length",
+            'FIELD_TYPE': 1, 
+            'FORMULA':"2*length(@geometry)",
+            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
+
+        expression = f'("Length (m)" = "length")'
+        
+        loffset=processing.run("native:extractbyexpression", {
+            'INPUT': loffset_calc,
+            'EXPRESSION': expression,
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+        }, context=context, feedback=feedback)['OUTPUT']
+        
+        roffset=processing.run("native:extractbyexpression", {
+            'INPUT': roffset_calc,
+            'EXPRESSION': expression,
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+        }, context=context, feedback=feedback)['OUTPUT']
+        
+        
         buffered_left = processing.run("native:buffer", {
-            'INPUT': loffset_layer,
+            'INPUT': loffset,
             'DISTANCE': 0.7,
             'SEGMENTS': 1,
             'END_CAP_STYLE': 2,
@@ -621,7 +757,7 @@ class DBs(QgsProcessingAlgorithm):
             }, context=context, feedback=feedback) ['OUTPUT']
 
         buffered_right = processing.run("native:buffer", {
-            'INPUT': roffset_layer,
+            'INPUT': roffset,
             'DISTANCE': 0.7,
             'SEGMENTS': 1,
             'END_CAP_STYLE': 2,            
@@ -644,7 +780,7 @@ class DBs(QgsProcessingAlgorithm):
             'BAND': 1,
             'COLUMN_PREFIX': "right_",
             'STATISTICS': 7,
-            'OUTPUT': 'TEMPORARY_OUTPUT'  
+            'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)['OUTPUT']
             
         # Merge the left and right lines
@@ -653,27 +789,16 @@ class DBs(QgsProcessingAlgorithm):
             'OUTPUT': 'TEMPORARY_OUTPUT'
         }, context=context, feedback=feedback)['OUTPUT']
         
+
         dissolved= processing.run(
             "native:dissolve",{
             'INPUT': merged,
             'FIELD': 'DB_ID',
             'OUTPUT':'TEMPORARY_OUTPUT'},context=context,feedback=feedback)['OUTPUT']
-            
-            
-        joined=processing.run("native:joinattributestable", {
-            'INPUT': dissolved,
-            'FIELD': 'DB_ID',
-            'INPUT_2': Compass_A_points,
-            'FIELD_2': 'DB_ID',
-            'FIELDS_TO_COPY': ['Contr_area', 'Elevation','Height (m)'],
-            'METHOD': 1,
-            'DISCARD_NONMATCHING': False,
-            'OUTPUT': 'TEMPORARY_OUTPUT'
-        }, context=context, feedback=feedback)['OUTPUT']        
-        
+                
         
         joined_range_l=processing.run("native:joinattributestable", {
-            'INPUT': joined,
+            'INPUT': dissolved,
             'FIELD': 'DB_ID',
             'INPUT_2': range_left,
             'FIELD_2': 'DB_ID',
@@ -693,14 +818,9 @@ class DBs(QgsProcessingAlgorithm):
             'METHOD': 1,
             'DISCARD_NONMATCHING': False,
             'OUTPUT': 'TEMPORARY_OUTPUT'
-        }, context=context, feedback=feedback)['OUTPUT']                
-        
+        }, context=context, feedback=feedback)['OUTPUT']
+
         expression = f'"left_range" > "Height (m)" AND "right_range" > "Height (m)"'
-
-
-
-            ###Change done here compared to the original script in Scripts
-
 
         # Select features that match the expression
         selected0 = processing.run("native:extractbyexpression", {
@@ -731,7 +851,8 @@ class DBs(QgsProcessingAlgorithm):
 
         # Save the final layer
         QgsVectorFileWriter.writeAsVectorFormat(selected2, out_db, 'utf-8', selected2.crs(), 'ESRI Shapefile')
-        
+
+
         #Ensure selected2 is a QgsVectorLayer
         if not isinstance(selected2, QgsVectorLayer):
             raise Exception("The output of extractbyexpression is not a QgsVectorLayer.")
@@ -742,46 +863,66 @@ class DBs(QgsProcessingAlgorithm):
         # To track processed features
         processed_features = set()
 
+        # Group points by their height and length
+        height_length_groups = defaultdict(lambda: defaultdict(list))
+
+        for feature in selected2.getFeatures():
+            height = feature['Height (m)']
+            length = feature['Length (m)']
+            height_length_groups[height][length].append(feature)
+            
         # Start an edit session
         selected2.startEditing()
 
-        # Loop through each feature in the layer
-        for feature in selected2.getFeatures():
-            DB_ID = feature['DB_ID']
+        # Process each height group separately
+        for height, length_groups in height_length_groups.items():
+            feedback.pushInfo(f'''
+            ----------- Processing height group: {height} m -------------------
+            ''')
 
-            # If the feature has been processed, skip it
-            if DB_ID in processed_features:
-                continue
+            for length, features in length_groups.items():
+                feedback.pushInfo(f'''
+                ----------- Processing length group: {length} -------------------
+                ''')
 
-            # Find intersecting features using the spatial index
-            intersecting_ids = index.intersects(feature.geometry().boundingBox())
-            intersecting_features = [f for f in selected2.getFeatures(QgsFeatureRequest().setFilterFids(intersecting_ids)) if f.geometry().intersects(feature.geometry())]
+                for feature in features:
+                    DB_ID = feature['DB_ID']
 
-            # If more than one intersecting feature, process them
-            while len(intersecting_features) > 1:
-                # Find the feature with the smallest contributing area
-                smallest_feature = min(intersecting_features, key=lambda f: f['Contr_area'])
-                
-                # Delete the feature with the smallest contributing area
-                selected2.deleteFeature(smallest_feature.id())
-                
-                # Update the processed feature list
-                processed_features.add(smallest_feature['DB_ID'])
+                    # If the feature has been processed, skip it
+                    if DB_ID in processed_features:
+                        continue
+                        
+                    buffer_geom = feature.geometry().buffer(10, 5)   ##First number indicates the distance
+                    
+                    
+                    # Find intersecting features using the spatial index
+                    intersecting_ids = index.intersects(buffer_geom.boundingBox())
+                    
+                    intersecting_features = [f for f in selected2.getFeatures(QgsFeatureRequest().setFilterFids(intersecting_ids)) if f.geometry().intersects(buffer_geom) and f['Height (m)'] == height and f['Length (m)'] == length]                    
+                    
 
-                # Rebuild the list of intersecting features
-                intersecting_ids = index.intersects(feature.geometry().boundingBox())
-                intersecting_features = [f for f in selected2.getFeatures(QgsFeatureRequest().setFilterFids(intersecting_ids)) if f.geometry().intersects(feature.geometry())]
+                    # If more than one intersecting feature, process them
+                    
+                    while len(intersecting_features) > 1:
+                        # Find the feature with the smallest contributing area
+                        smallest_feature = min(intersecting_features, key=lambda f: f['Contr_area'])
+
+                        # Delete the feature with the smallest contributing area
+                        selected2.deleteFeature(smallest_feature.id())
+
+                        # Update the processed feature list
+                        processed_features.add(smallest_feature['DB_ID'])
+
+                        # Rebuild the list of intersecting features
+                        intersecting_ids = index.intersects(buffer_geom.boundingBox())
+                        intersecting_features = [f for f in selected2.getFeatures(QgsFeatureRequest().setFilterFids(intersecting_ids)) if f.geometry().intersects(buffer_geom) and f['Height (m)'] == height and f['Length (m)'] == length]
 
         # Commit changes
         selected2.commitChanges()
 
-        
-        temp = QgsProcessingUtils.generateTempFilename('temp.shp')
-        
         # Save the renamed layer to the final output
         QgsVectorFileWriter.writeAsVectorFormat(selected2, out_db, 'utf-8', flow_network.crs(), 'ESRI Shapefile')
 
-        
         FB_lines=processing.run("native:polygonstolines", {
             'INPUT': isAG1,
             'OUTPUT': 'TEMPORARY_OUTPUT'
@@ -823,16 +964,8 @@ class DBs(QgsProcessingAlgorithm):
         QgsVectorFileWriter.writeAsVectorFormat(select_intersect, out_db, 'utf-8', flow_network.crs(), 'ESRI Shapefile')
         
         
-        #Calculation of length
-        LengthDB=processing.run("native:fieldcalculator", {
-            'INPUT':select_intersect, 
-            'FIELD_NAME': "Length (m)",
-            'FIELD_TYPE': 1, 
-            'FORMULA':"length(@geometry)",
-            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
         
-        # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(LengthDB, out_db, 'utf-8', flow_network.crs(), 'ESRI Shapefile')        
         
 
-        return {'PotentialDB': LengthDB,'OutPoints': sorted}
+
+        return {'OutPoints': ID2, 'PotentialDB': select_intersect}

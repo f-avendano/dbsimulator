@@ -1,4 +1,6 @@
 import processing
+import os
+import tempfile
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.analysis import QgsZonalStatistics
 from qgis.core import (QgsProcessing,
@@ -13,8 +15,11 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFolderDestination,
                        QgsProcessingParameterNumber,
                        QgsProcessingContext,
-                       QgsProcessingUtils)
+                       QgsProcessingUtils,
+                       QgsProject)
 from datetime import datetime
+
+
 
 
 class ImpededFlow(QgsProcessingAlgorithm):
@@ -32,7 +37,7 @@ class ImpededFlow(QgsProcessingAlgorithm):
         return 'Identify Impeded Flow'
 
     def displayName(self):
-        return 'Identify impeded flow'
+        return '2) Identify impeded flow'
 
     def group(self):
         return 'DB simulator'
@@ -59,37 +64,40 @@ class ImpededFlow(QgsProcessingAlgorithm):
         # Get parameter values
         dem = self.parameterAsRasterLayer(parameters, 'DEM', context)
         filled=self.parameterAsRasterLayer(parameters, 'FilledDEM', context)
-        #output_folder = self.parameterAsFolderDestination(parameters, 'OutputFolder', context)
         output_depthgrid= self.parameterAsOutputLayer(parameters, 'DepthGrid', context)
         
         
         # Perform the necessary processing using PyQGIS functions
         if not dem.isValid():
             print('Invalid layers. Check file paths.')
+        
         else:
             
-            #Creating a temporary raster. SAGA needs a raster destination as it does not handle well the 'OUTPUT' = 'TEMPORARY_OUTPUT' like other
-            #processing tools
-            temp_output = QgsProcessingUtils.generateTempFilename('raster_difference.tif')
+            # #Creating a temporary raster. SAGA needs a raster destination as it does not handle well the 'OUTPUT' = 'TEMPORARY_OUTPUT' like other
+            # #processing tools
+            # temp_output = QgsProcessingUtils.generateTempFilename('raster_difference.tif')
             
             
-            #Using SAGA for substracting the Unfilled DEM from the Filled DEM
-            raster_difference = processing.run("saga:rasterdifference", {
-            'A': filled,
-            'B': dem,
-            'C': temp_output
-            }, context=context, feedback=feedback)["C"]
+            # #Using SAGA for substracting the Unfilled DEM from the Filled DEM
+            # raster_difference = processing.run("saga:rasterdifference", {
+            # 'A': filled,
+            # 'B': dem,
+            # 'C': temp_output
+            # }, context=context, feedback=feedback)["C"]
             
             
+            expression =f'\"{filled.name()}@1\" - \"{dem.name()}@1\"'
             
-            #Handling raster_difference generation error
-            if not raster_difference:
-                print('Error in generating raster difference.')
-                return {}
+            
+            raster_difference = processing.run("qgis:rastercalculator", {
+            'EXPRESSION': expression,
+            'LAYERS': [filled, dem],
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+            }, context=context, feedback=feedback)["OUTPUT"]
             
             
             #Declaring the expression to use in the raster calculator
-            expression = f'(({raster_difference}@1 > 0) * {raster_difference}@1)'
+            expression = f'((\"{raster_difference}@1\" > 0) * \"{raster_difference}@1\")'
             
             
             
@@ -97,21 +105,20 @@ class ImpededFlow(QgsProcessingAlgorithm):
             output_noneg = processing.run("qgis:rastercalculator", {
             'EXPRESSION': expression,
             'LAYERS': raster_difference,
-            'OUTPUT': 'TEMPORARY_OUTPUT'
-            }, context=context, feedback=feedback)["OUTPUT"]
-            
-            
-            
-            #We use GDAL translate tool to eliminate all zero values and obtain only positive numbers
-            output_depthgrid = processing.run("gdal:translate", {
-            'INPUT': output_noneg,
-            'NODATA': 0,
             'OUTPUT': output_depthgrid
             }, context=context, feedback=feedback)["OUTPUT"]
+            
+            
+            # #We use GDAL translate tool to eliminate all zero values and obtain only positive numbers
+            # depthgrid = processing.run("gdal:translate", {
+            # 'INPUT': output_noneg,
+            # 'NODATA': 0,
+            # 'OUTPUT': output_depthgrid
+            # }, context=context, feedback=feedback)["OUTPUT"]
             
             
 
         # Return results
         return {
-            'DepthGrid': output_depthgrid
+            'DepthGrid': output_noneg
             }

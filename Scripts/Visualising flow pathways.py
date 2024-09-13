@@ -29,7 +29,7 @@ class FlowPaths(QgsProcessingAlgorithm):
         return 'Visualising flow pathways '
 
     def displayName(self):
-        return 'Visualising flow pathways'
+        return '3) Visualising flow pathways'
 
     def group(self):
         return 'DB simulator'

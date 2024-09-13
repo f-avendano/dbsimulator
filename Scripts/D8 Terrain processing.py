@@ -1,9 +1,12 @@
-import processing
 
+import tempfile
+import os
+import processing
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.analysis import QgsZonalStatistics
 from qgis.core import (QgsProcessing,
                        QgsProcessingAlgorithm,
+                       QgsProject,
                        QgsProcessingException,
                        QgsProcessingOutputNumber,
                        QgsProcessingParameterRasterLayer,
@@ -18,6 +21,10 @@ from qgis.core import (QgsProcessing,
 from datetime import datetime
 
 
+
+
+
+
 class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
 
     def tr(self, string):
@@ -27,7 +34,7 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
         return 'Terrain Processing'
 
     def displayName(self):
-        return 'Terrain Processing'
+        return '1) Terrain Processing'
 
     def group(self):
         return 'DB simulator'
@@ -61,7 +68,10 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
         output_hillshade = self.parameterAsOutputLayer(parameters, 'OutputHshd', context)
         z_factor = self.parameterAsDouble(parameters, 'ZFactor', context)
         
-        # Perform the necessary processing using PyQGIS functions
+        
+        
+        ''' Processing'''
+
         if not dem.isValid():
             print('Invalid layers. Check file paths.')
         else:
@@ -96,3 +106,8 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
             'OutputHshd': output_hillshade,
             'OutputFlowAcc': output_flow_acc
         }
+    
+    
+    
+
+

@@ -43,7 +43,7 @@ class DBs(QgsProcessingAlgorithm):
         return 'DBs-catch'
 
     def displayName(self):
-        return 'Detainment bund catchments tool'
+        return '8a) Detainment bund catchments tool'
 
     def group(self):
         return 'DB simulator'
@@ -118,6 +118,15 @@ class DBs(QgsProcessingAlgorithm):
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)["OUTPUT"]
 
+
+        dissolved_sorted=processing.run("native:orderbyexpression", {   
+            'INPUT': dissolve,
+            'EXPRESSION': 'poly_id',
+            'ASCENDING': True,
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+            }, context=context, feedback=feedback)['OUTPUT']
+
+
         temp_raster = QgsProcessingUtils.generateTempFilename('temp_raster.tif')
 
         #Finding watersheds of all detainment bund places
@@ -125,9 +134,9 @@ class DBs(QgsProcessingAlgorithm):
         watersheds= processing.run(
             "grass7:r.stream.basins",{
             'direction': flowdir,
-            'points': dissolve,
+            'points': dissolved_sorted,
             'memory': memory,
-            'basins':'TEMPORARY_OUTPUT'},context=context,feedback=feedback)['basins']
+            'basins':temp_raster},context=context,feedback=feedback)['basins']
 
         
         feedback.pushInfo('''
@@ -137,10 +146,10 @@ class DBs(QgsProcessingAlgorithm):
         ''')
 
 
-        dem_crs = dem.crs().toWkt()
-        feedback.pushInfo(f'DEM CRS: {dem_crs}')
-        feedback.pushInfo(f'Extent: {dem.extent().toString()}')
-        
+        #dem_crs = dem.crs().toWkt()
+        #feedback.pushInfo(f'DEM CRS: {dem_crs}')
+        #feedback.pushInfo(f'Extent: {dem.extent().toString()}')
+        epsg_code = dem.crs().authid() 
         
         #Rasterizing DBs based on ID parameter
 
@@ -151,8 +160,8 @@ class DBs(QgsProcessingAlgorithm):
             'WIDTH': 1.0,
             'HEIGHT': 1.0,
             'NODATA': 0,
-            'EXTENT': dem,
-            'EXTRA': f'-a_srs "{dem_crs}"',
+            'EXTENT': buffer.extent(), #was dem
+            'EXTRA': f'-a_srs "{epsg_code}"',
             'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
 
 
@@ -165,8 +174,8 @@ class DBs(QgsProcessingAlgorithm):
             'WIDTH': 1.0,
             'HEIGHT': 1.0,
             'NODATA': 0,
-            'EXTENT': dem,
-            'EXTRA': f'-a_srs "{dem_crs}"',
+            'EXTENT': buffer.extent(), #was dem
+            'EXTRA': f'-a_srs "{epsg_code}"',
             'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
         
         #Converting format, needed for GRASS zonal stats processing
@@ -174,7 +183,7 @@ class DBs(QgsProcessingAlgorithm):
         id_translated=processing.run('gdal:translate',{
             'INPUT': rasterised_db_id,
             'DATA_TYPE': 5,
-            'EXTRA': f'-a_srs "{dem_crs}"',
+            'EXTRA': f'-a_srs "{epsg_code}"',
             'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
 
 
@@ -182,14 +191,21 @@ class DBs(QgsProcessingAlgorithm):
             'base': id_translated,
             'cover': dem,
             'method': 2,
+            'GRASS_REGION_PARAMETER': dem,
             'output': 'TEMPORARY_OUTPUT' 
             }, context=context, feedback=feedback)['output']
             
-        expression =f'\"{min_DB}@1\" + \"{rasterised_db_height}@1\"'
+        min_DB_with_crs = processing.run('gdal:assignprojection', {
+            'INPUT': min_DB,
+            'CRS': dem.crs().toWkt(),
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+            }, context=context, feedback=feedback)['OUTPUT']
+            
+        expression =f'\"{min_DB_with_crs}@1\" + \"{rasterised_db_height}@1\"'
         
         db_hgt= processing.run("qgis:rastercalculator", {
             'EXPRESSION': expression,
-            'LAYERS': [rasterised_db_height, min_DB],
+            'LAYERS': [rasterised_db_height, min_DB_with_crs],
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)["OUTPUT"]
         
@@ -273,7 +289,7 @@ class DBs(QgsProcessingAlgorithm):
             'INPUT': locations,
             'FIELD_NAME': "ID",
             'FIELD_TYPE': 0, 
-            'FORMULA': f'@id+1',
+            'FORMULA': f'@id+1', #was id+1
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)['OUTPUT']
         
@@ -282,7 +298,7 @@ class DBs(QgsProcessingAlgorithm):
             'FIELD': 'value',
             'INPUT_2': ID_field,
             'FIELD_2': 'ID',
-            'FIELDS_TO_COPY': ['DB_ID', 'Contr_area'],
+            'FIELDS_TO_COPY': ['DB_ID', 'Contr_area', 'Height (m)'],
             'METHOD': 1,
             'DISCARD_NONMATCHING': False,
             'OUTPUT': 'TEMPORARY_OUTPUT'
@@ -290,7 +306,7 @@ class DBs(QgsProcessingAlgorithm):
 
         
         fixed=processing.run("native:fixgeometries", {
-            'INPUT': joined,##joined
+            'INPUT': joined,
             'METHOD': 1,
             'OUTPUT': 'TEMPORARY_OUTPUT'
         }, context=context, feedback=feedback)['OUTPUT']
@@ -327,16 +343,6 @@ class DBs(QgsProcessingAlgorithm):
             'FIELD_TYPE': 0,
             'FORMULA':"area(@geometry)",
             'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
-
-
-        
-        # simplified=processing.run("native:simplifygeometries", { 
-        #     'INPUT': area,
-        #     'METHOD': 2,
-        #     'TOLERANCE': 1.5,
-        #     'OUTPUT': 'TEMPORARY_OUTPUT'
-        # }, context=context, feedback=feedback)['OUTPUT']
-
 
         smoothed=processing.run("native:smoothgeometry", { 
             'INPUT': area,
@@ -402,8 +408,4 @@ class DBs(QgsProcessingAlgorithm):
         }, context=context, feedback=feedback)['OUTPUT']
         
 
-        
         return {'Catchments':sorted, 'Depth': nodata}
-        
-        
-        

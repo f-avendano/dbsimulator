@@ -33,7 +33,7 @@ class AreaThreshold(QgsProcessingAlgorithm):
         return 'Identifying flow pathways (detailed)'
 
     def displayName(self):
-        return 'Identifying flow pathways (detailed)'
+        return '5) Identifying flow pathways (detailed)'
 
     def group(self):
         return 'DB simulator'
@@ -112,10 +112,10 @@ class AreaThreshold(QgsProcessingAlgorithm):
         
         # flowdir=result['direction']
         
-        processing.run("saga:copyfeatures", {
-        'SHAPES': temp_stream_vector,
-        'COPY': output_flowpaths
-        }, context=context, feedback=feedback)        
+        # processing.run("saga:copyfeatures", {
+        # 'SHAPES': temp_stream_vector,
+        # 'COPY': output_flowpaths
+        # }, context=context, feedback=feedback)        
         
         temp_output = QgsProcessingUtils.generateTempFilename('strahler.tif')
         
@@ -131,14 +131,28 @@ class AreaThreshold(QgsProcessingAlgorithm):
 
         
         # Convert raster to vector
-        output_flowpaths = processing.run("grass7:r.to.vect", {
+        output_strahler_v = processing.run("grass7:r.to.vect", {
             'input': output_strahler,
             'type': 0,
             'column': 'Strahler',
-            '-v': True,
-            'output': output_flowpaths ###THIS MUST REMAIN AS THE VECTOR (VARIABLE) NAME!!!! ESPECIALLY WHEN IT'S A PARAMETERASOUTPUTLAYER'
+            #'-v': True,
+            'output': 'TEMPORARY_OUTPUT' ###THIS MUST REMAIN AS THE VECTOR (VARIABLE) NAME!!!! ESPECIALLY WHEN IT'S A PARAMETERASOUTPUTLAYER'
         }, context=context, feedback=feedback)["output"]
         
+        matched= processing.run("native:extractbyexpression", {
+            'INPUT':output_strahler_v,
+            'EXPRESSION':'length(@geometry)>=3',
+            'OUTPUT':'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
+        
+        joined=processing.run("native:joinattributesbylocation", {
+            'INPUT':temp_stream_vector,
+            'PREDICATE':[0],
+            'JOIN':matched,
+            'JOIN_FIELDS':['Strahler'],
+            'METHOD':2,
+            'DISCARD_NONMATCHING':False,
+            'PREFIX':'',
+            'OUTPUT':output_flowpaths}, context=context, feedback=feedback)['OUTPUT']
         
         # Open the output vector layer
         output_flowpaths_layer = QgsVectorLayer(output_flowpaths, 'FlowPaths', 'ogr')
@@ -171,6 +185,21 @@ class AreaThreshold(QgsProcessingAlgorithm):
             
         #Delete 'label' field
         idx = output_flowpaths_layer.fields().indexFromName('label')
+        if idx != -1:
+            output_flowpaths_layer.deleteAttribute(idx)
+            
+        #Delete 'stream_typ' field
+        idx = output_flowpaths_layer.fields().indexFromName('stream_typ')
+        if idx != -1:
+            output_flowpaths_layer.deleteAttribute(idx)
+
+        #Delete 'type_code' field
+        idx = output_flowpaths_layer.fields().indexFromName('type_code')
+        if idx != -1:
+            output_flowpaths_layer.deleteAttribute(idx)
+
+        #Delete 'network' field
+        idx = output_flowpaths_layer.fields().indexFromName('network')
         if idx != -1:
             output_flowpaths_layer.deleteAttribute(idx)
             

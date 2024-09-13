@@ -43,7 +43,7 @@ class StreamReachAlgorithm(QgsProcessingAlgorithm):
         return 'StreamReachAlgorithm'
 
     def displayName(self):
-        return 'Stream Reach Algorithm'
+        return '6) Stream Reach Algorithm'
 
     def group(self):
         return 'DB simulator'
@@ -57,7 +57,7 @@ class StreamReachAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr('''This algorithm identifies the main reaches from the previous step 'Identify flow pathways (detailed)' and creates a stream reach and catchments vector layer using Taudem
-
+        IMPORTANT: ALL INPUTS MUST HAVE CRS
     
     --- Developed and adapted on July 2024 by Fernando Avendaño Veas (Massey University) using ArcPy scripts from the ACPF project (USDA) ---    
     
@@ -74,7 +74,7 @@ class StreamReachAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterField('LimitField', 'LimitField', type=QgsProcessingParameterField.Numeric, parentLayerParameterName='FlowNetwork', allowMultiple=False, defaultValue=None, optional=True))
         self.addParameter(QgsProcessingParameterNumber('ClassValue', 'Class Value', type=QgsProcessingParameterNumber.Double, defaultValue=1))
         self.addParameter(QgsProcessingParameterVectorDestination('OutStreamReach', 'Output Stream Reach'))
-        self.addParameter(QgsProcessingParameterVectorDestination('OutCatchments', 'Output Catchments'))
+        self.addParameter(QgsProcessingParameterVectorDestination('OutCatchments', 'Output Sub-catchments'))
 
 
     def processAlgorithm(self, parameters, context, feedback):
@@ -217,6 +217,21 @@ class StreamReachAlgorithm(QgsProcessingAlgorithm):
         w=os.path.join(temp_dir, 'TDWatersheds.tif')
         
 
+        
+        print("Running StreamNet with the following parameters:")
+        print(f"mpiexec: {mpiexec}")
+        print(f"StreamNet: {StreamNet}")
+        print(f"dem_fill: {dem_fill.source()}")
+        print(f"reclassified: {reclassified}")
+        print(f"output_flow_accumulation: {output_flow_accumulation}")
+        print(f"rasterized_lines: {rasterized_lines}")
+        print(f"order: {order}")
+        print(f"tree: {tree}")
+        print(f"coord: {coord}")
+        print(f"net: {net}")
+        print(f"w: {w}")
+        
+        
         subprocess.run([mpiexec,"-n", str(num_cores),StreamNet,
         "-fel", dem_fill.source(), 
         "-p", reclassified, 
@@ -227,7 +242,8 @@ class StreamReachAlgorithm(QgsProcessingAlgorithm):
         "-coord", coord,
         "-net", net,
         "-w", w],shell=True,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
-
+        
+        
 
         #Adds stream reach to the map canvas and assigns a raster file to catchment raster
             #few lines below to create a new temporary vector 
@@ -267,7 +283,7 @@ class StreamReachAlgorithm(QgsProcessingAlgorithm):
         
         
         # Copy the original raster to the temporary directory
-        shutil.copy(w, temp_raster)       
+        shutil.copy(w, temp_raster)
 
 
         rlayer = QgsRasterLayer(temp_raster, "CatchmentsRaster")
@@ -303,7 +319,7 @@ class StreamReachAlgorithm(QgsProcessingAlgorithm):
 
         shutil.rmtree(temp_dir)
 
-        # Return results
+
         return {
             'OutStreamReach': out_stream_reach, 
             'OutCatchments': out_catchments,
