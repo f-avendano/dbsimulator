@@ -70,13 +70,17 @@ class FlowPaths(QgsProcessingAlgorithm):
         
         ''')
         #Conversion from squared metres to hectares
-        
+
+
         pixels=flowacc.rasterUnitsPerPixelX()
-        expression = f'(({flowacc.name()}@1*{pixels})/10000)'
+        
+        expression = f'(\"{flowacc.name()}@1\" * {pixels}) / 10000'
+
+
 
         flowacc_ha= processing.run("qgis:rastercalculator", {
             'EXPRESSION': expression,
-            'LAYERS': flowacc,
+            'LAYERS': [flowacc],
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)["OUTPUT"]
         
@@ -88,7 +92,7 @@ class FlowPaths(QgsProcessingAlgorithm):
         
         drainage_network= processing.run("qgis:rastercalculator", {
             'EXPRESSION': expression,
-            'LAYERS': flowacc_ha,
+            'LAYERS': [flowacc_ha],
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)["OUTPUT"]
         

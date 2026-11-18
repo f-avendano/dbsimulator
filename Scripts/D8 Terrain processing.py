@@ -57,6 +57,7 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterRasterDestination('OutputFillDEM', 'Output Fill DEM'))
         self.addParameter(QgsProcessingParameterRasterDestination('OutputHshd', 'Output Hillshade'))
         self.addParameter(QgsProcessingParameterNumber('ZFactor', 'Z Factor', type=QgsProcessingParameterNumber.Double, minValue=0.0, defaultValue=1))
+        self.addParameter(QgsProcessingParameterNumber('Memory', 'Max. memory usage (MB)', QgsProcessingParameterNumber.Double, defaultValue=3000,))
         self.addParameter(QgsProcessingParameterRasterDestination('OutputFlowAcc', 'Output Flow Accumulation'))
 
 
@@ -67,15 +68,19 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
         output_flow_acc = self.parameterAsOutputLayer(parameters, 'OutputFlowAcc', context)       
         output_hillshade = self.parameterAsOutputLayer(parameters, 'OutputHshd', context)
         z_factor = self.parameterAsDouble(parameters, 'ZFactor', context)
+        memory = self.parameterAsDouble(parameters, 'Memory', context)
+
         
         
         
-        ''' Processing'''
+        ''' Processing:
+        Important: here we use the filled DEM for accumulation instead of unfilled because we want to avoid DEM errors and
+        have a smooth surface. This could affect flat areas, as they will be flooded; future work will be done to mitigate this'''
 
         if not dem.isValid():
             print('Invalid layers. Check file paths.')
         else:
-            output_fill_dem = processing.run("saga:fillsinksxxlwangliu", { 
+            output_fill_dem = processing.run("sagang:fillsinksxxlwangliu", { 
             'ELEV': dem,
             'MINSLOPE':0.0,
             'FILLED': output_fill_dem,
@@ -85,7 +90,7 @@ class D8TerrainProcessingAlgorithm(QgsProcessingAlgorithm):
             output_flow_acc = processing.run("grass7:r.watershed", {
                 'elevation': output_fill_dem,
                 'threshold': 500000,
-                'memory': 3000,
+                'memory': memory,
                 '-s': True,
                 '-a': True,
                 'accumulation': output_flow_acc

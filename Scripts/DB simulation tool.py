@@ -1,4 +1,6 @@
 import processing
+import os
+import tempfile
 from qgis.PyQt.QtCore import QCoreApplication, QVariant
 from qgis.core import (QgsProcessing,
                        QgsProcessingAlgorithm,
@@ -82,7 +84,7 @@ class DBs(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterVectorLayer('StreamReach', 'Stream reach or vector with perennial streams', types=[QgsProcessing.TypeVectorLine])) #or order
         self.addParameter(QgsProcessingParameterVectorLayer('CatchmentBoundary', 'Catchment boundary'))
         self.addParameter(QgsProcessingParameterNumber('Spacing', 'Point spacing (m) to simulate detainment bunds', QgsProcessingParameterNumber.Integer, defaultValue=60))
-        self.addParameter(QgsProcessingParameterNumber('Height', 'Detainment bund height (m)', QgsProcessingParameterNumber.Integer, defaultValue=3))
+        self.addParameter(QgsProcessingParameterNumber('Height', 'Detainment bund height (m)', QgsProcessingParameterNumber.Double, defaultValue=3))
         self.addParameter(QgsProcessingParameterNumber('Length', 'Detainment bund length (m)', QgsProcessingParameterNumber.Integer, defaultValue=20))
         
         self.addParameter(QgsProcessingParameterBoolean('Checkbox2','''
@@ -113,6 +115,8 @@ class DBs(QgsProcessingAlgorithm):
         tooincised=self.parameterAsBool(parameters,'Checkbox2', context)
 
         
+        feedback.pushInfo(f"DEBUG Height raw (parameterAsDouble): {height!r}")
+        
         ###CREATING STREAMS >=2 HA AND <=50 HA
         feedback.pushInfo('''
         
@@ -122,7 +126,7 @@ class DBs(QgsProcessingAlgorithm):
         #Conversion from squared metres to hectares
         
         pixels=flowacc.rasterUnitsPerPixelX()
-        expression = f'(({flowacc.name()}@1*{pixels})/10000)'
+        expression = f'(\"{flowacc.name()}@1\" * {pixels}) / 10000'
 
         flowacc_ha= processing.run("qgis:rastercalculator", {
             'EXPRESSION': expression,
@@ -347,7 +351,7 @@ class DBs(QgsProcessingAlgorithm):
         save_options.fileEncoding = "UTF-8"
 
         # If exporting only points, replace the temp shp for "points"
-        QgsVectorFileWriter.writeAsVectorFormatV3(out_layer, temp_path, transform_context, save_options)
+        QgsVectorFileWriter.writeAsVectorFormatV3(out_layer, temp_out_path, transform_context, save_options)
         
             
             
@@ -359,7 +363,7 @@ class DBs(QgsProcessingAlgorithm):
         
         
         ID = processing.run("native:fieldcalculator", { 
-            'INPUT': temp_path,
+            'INPUT': temp_out_path,
             'FIELD_NAME': "DB_ID",
             'FIELD_TYPE': 1, 
             'FORMULA': "@id",
@@ -388,17 +392,17 @@ class DBs(QgsProcessingAlgorithm):
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback) ['OUTPUT']
                 
-        mean_CA = processing.run("native:zonalstatisticsfb", {
+        max_CA = processing.run("native:zonalstatisticsfb", {
             'INPUT': buffered_points,
             'INPUT_RASTER': flowacc_ha,
             'RASTER_BAND': 1,
             'COLUMN_PREFIX': "_",
-            'STATISTICS': 2,
+            'STATISTICS': 6,
             'OUTPUT': 'TEMPORARY_OUTPUT'  
             }, context=context, feedback=feedback)['OUTPUT']
         
         mean_elev = processing.run("native:zonalstatisticsfb", {
-            'INPUT': mean_CA,
+            'INPUT': max_CA,
             'INPUT_RASTER': dem,
             'RASTER_BAND': 1,
             'COLUMN_PREFIX': "_1",
@@ -422,14 +426,14 @@ class DBs(QgsProcessingAlgorithm):
             'FIELD': 'DB_ID',
             'INPUT_2': mean_reach,
             'FIELD_2': 'DB_ID',
-            'FIELDS_TO_COPY': ['_mean', '_1mean','_2mean'],
+            'FIELDS_TO_COPY': ['_max', '_1mean','_2mean'],
             'METHOD': 1,
             'DISCARD_NONMATCHING': False,
             'OUTPUT': 'TEMPORARY_OUTPUT'
         }, context=context, feedback=feedback)['OUTPUT']
         
         
-        expression = f'( ("_2mean" IS NOT NULL) AND  ("_mean" >2) AND ("_mean" <50) AND ("_mean" IS NOT NULL))'
+        expression = f'( ("_2mean" IS NOT NULL) AND  ("_max" >2) AND ("_max" <50) AND ("_max" IS NOT NULL))'
         
         selected=processing.run("native:extractbyexpression", {
             'INPUT': joined,
@@ -454,7 +458,7 @@ class DBs(QgsProcessingAlgorithm):
         reach_added.startEditing()
 
         # Rename field
-        idx = reach_added.fields().indexFromName('_mean')
+        idx = reach_added.fields().indexFromName('_max')
         if idx != -1:
             reach_added.renameAttribute(idx, 'Contr_area')
         
@@ -473,10 +477,9 @@ class DBs(QgsProcessingAlgorithm):
         reach_added.commitChanges()
 
         # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(reach_added, points, 'utf-8', selected.crs(), 'ESRI Shapefile')
+        QgsVectorFileWriter.writeAsVectorFormatV3(reach_added, points, transform_context, save_options)
         
-        
-        
+
         
         #Sort by catchment area
         
@@ -499,7 +502,7 @@ class DBs(QgsProcessingAlgorithm):
                 
         
         # # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(sorted, points, 'utf-8', selected.crs(), 'ESRI Shapefile')        
+        QgsVectorFileWriter.writeAsVectorFormatV3(sorted, points, transform_context, save_options)        
         
         
         # Delete points where elevation drop is insufficient
@@ -509,32 +512,81 @@ class DBs(QgsProcessingAlgorithm):
         
         ''')
 
-        for Reach in ReachList:
-            UpElev = float('inf')
+       
+        buffered_diss = processing.run("native:buffer", {
+            'INPUT': diss,
+            'DISTANCE': 2,
+            'SEGMENTS': 1,
+            'END_CAP_STYLE': 0,
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+            }, context=context, feedback=feedback) ['OUTPUT']
+
+
+
+        split_buff= processing.run("native:splitwithlines", {
+         'INPUT':buffered_diss,
+         'LINES':buffered_diss,
+         'OUTPUT':'TEMPORARY_OUTPUT'
+         }, context=context, feedback=feedback) ['OUTPUT']
+        
+        
+        
+        split_buff_ID = processing.run("native:fieldcalculator", {
+            'INPUT': split_buff,
+            'FIELD_NAME': 'ID',
+            'FIELD_TYPE': 1, 
+            'FORMULA': "@id",
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+            }, context=context, feedback=feedback)['OUTPUT']
+
+
+         # Step 3: Assign each point to its corresponding split buffer zone
+        points_with_buffers = processing.run("native:joinattributesbylocation", {
+            'INPUT': sorted,
+            'JOIN': split_buff_ID,
+            'PREDICATE': [0],
+            'JOIN_FIELDS': ['ID'],
+            'METHOD': 1,
+            'DISCARD_NONMATCHING': True,
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+        }, context=context, feedback=feedback)['OUTPUT']
+
+       
+        # Step 4: Collect unique buffer IDs from the joined points layer
+        buffer_ids = points_with_buffers.uniqueValues(points_with_buffers.fields().indexFromName('ID'))
+
+        # Iterate through each buffer zone
+        points_with_buffers.startEditing()
+        
+        for buffer_id in buffer_ids:
+            # Filter points by the current buffer
+            buffer_points = [feat for feat in points_with_buffers.getFeatures() if feat['ID'] == buffer_id]
             
-            sorted.startEditing()
-            for feature in sorted.getFeatures():
-                if feature['Reach'] != Reach:
-                    continue
+            # Sort points by elevation in descending order
+            buffer_points.sort(key=lambda f: -f['Elevation'])
+
+            # Process points for elevation drop comparison
+            UpElev = float('inf')
+            for feature in buffer_points:
                 CurrentElev = feature['Elevation'] + height
                 if CurrentElev < UpElev:
                     UpElev = feature['Elevation']
                 else:
-                    sorted.deleteFeature(feature.id())
-            sorted.commitChanges()
+                    points_with_buffers.deleteFeature(feature.id())
+        points_with_buffers.commitChanges()
 
-        # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(sorted, points, 'utf-8', selected.crs(), 'ESRI Shapefile')
-        
-        
-        #Add and populate "Height" field
+
+        # Save the final output
+        QgsVectorFileWriter.writeAsVectorFormatV3(points_with_buffers, points, transform_context, save_options) 
         
         
         height_field = processing.run("native:fieldcalculator", {
-            'INPUT': sorted,
+            'INPUT': points_with_buffers,
             'FIELD_NAME': "Height (m)",
-            'FIELD_TYPE': 1, 
-            'FORMULA': f'{height}',
+            'FIELD_TYPE': 0, 
+            'FIELD_LENGTH': 10,       # IMPORTANT
+            'FIELD_PRECISION': 2,     # IMPORTANT
+            'FORMULA': str(height),   # 2.5
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)['OUTPUT']        
         
@@ -684,7 +736,8 @@ class DBs(QgsProcessingAlgorithm):
         }, context=context, feedback=feedback)['OUTPUT']                
         
         
-        joined2=processing.run("native:joinattributestable", {
+        # Step 1: Join attributes table and extract features
+        joined2 = processing.run("native:joinattributestable", {
             'INPUT': joined_range_l,
             'FIELD': 'DB_ID',
             'INPUT_2': range_right,
@@ -694,145 +747,144 @@ class DBs(QgsProcessingAlgorithm):
             'DISCARD_NONMATCHING': False,
             'OUTPUT': 'TEMPORARY_OUTPUT'
         }, context=context, feedback=feedback)['OUTPUT']                
-        
+
         expression = f'"left_range" > "Height (m)" AND "right_range" > "Height (m)"'
 
 
-
-            ###Change done here compared to the original script in Scripts
+        temp1 = QgsProcessingUtils.generateTempFilename('temp1.shp')
 
 
         # Select features that match the expression
         selected0 = processing.run("native:extractbyexpression", {
             'INPUT': joined2,
             'EXPRESSION': expression,
-            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
-        
-        selected1= processing.run(
-            "native:fixgeometries",{
-            'INPUT': selected0,
-            'OUTPUT':'TEMPORARY_OUTPUT'},context=context,feedback=feedback)['OUTPUT']
-        
-        if tooincised is True:
-            
-            feedback.pushInfo('''
-            ----------- Deleting DBs with banks more than double the height of the DB embankment --------
-            ''')
-            expression = f'"left_range" < ("Height (m)"*2) AND "right_range" < ("Height (m)"*2)'
+            'OUTPUT': temp1}, context=context, feedback=feedback)['OUTPUT']
 
-            # Select features that match the expression
+
+
+        
+        # Fix geometries
+        selected1 = processing.run("native:fixgeometries", {
+            'INPUT': selected0,
+            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
+
+        if tooincised:
+            feedback.pushInfo("Deleting DBs with banks more than double the height of the DB embankment")
+            expression = f'"left_range" < ("Height (m)"*2) AND "right_range" < ("Height (m)"*2)'
             selected2 = processing.run("native:extractbyexpression", {
                 'INPUT': selected1,
                 'EXPRESSION': expression,
-                'OUTPUT': 'TEMPORARY_OUTPUT'
-            }, context=context, feedback=feedback)['OUTPUT']
+                'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
         else:
             selected2 = selected1
 
-        # Save the final layer
-        QgsVectorFileWriter.writeAsVectorFormat(selected2, out_db, 'utf-8', selected2.crs(), 'ESRI Shapefile')
-        
-        #Ensure selected2 is a QgsVectorLayer
-        if not isinstance(selected2, QgsVectorLayer):
-            raise Exception("The output of extractbyexpression is not a QgsVectorLayer.")
 
-        # Create a spatial index for the selected layer
+        QgsVectorFileWriter.writeAsVectorFormatV3(selected2, out_db, transform_context, save_options)
+
+
+        # Ensure selected2 is a valid QgsVectorLayer
+        if not selected2.isValid():
+            raise Exception("Failed to reload selected2 as a valid QgsVectorLayer")
+
+        # Step 3: Create a spatial index for the selected layer
         index = QgsSpatialIndex(selected2.getFeatures())
-
-        # To track processed features
-        processed_features = set()
 
         # Start an edit session
         selected2.startEditing()
 
-        # Loop through each feature in the layer
+        processed_features = set()
+
         for feature in selected2.getFeatures():
             DB_ID = feature['DB_ID']
 
-            # If the feature has been processed, skip it
             if DB_ID in processed_features:
                 continue
 
-            # Find intersecting features using the spatial index
             intersecting_ids = index.intersects(feature.geometry().boundingBox())
-            intersecting_features = [f for f in selected2.getFeatures(QgsFeatureRequest().setFilterFids(intersecting_ids)) if f.geometry().intersects(feature.geometry())]
+            intersecting_features = [
+                f for f in selected2.getFeatures(QgsFeatureRequest().setFilterFids(intersecting_ids))
+                if f.geometry().intersects(feature.geometry())
+            ]
 
-            # If more than one intersecting feature, process them
             while len(intersecting_features) > 1:
-                # Find the feature with the smallest contributing area
                 smallest_feature = min(intersecting_features, key=lambda f: f['Contr_area'])
-                
-                # Delete the feature with the smallest contributing area
                 selected2.deleteFeature(smallest_feature.id())
-                
-                # Update the processed feature list
                 processed_features.add(smallest_feature['DB_ID'])
 
-                # Rebuild the list of intersecting features
                 intersecting_ids = index.intersects(feature.geometry().boundingBox())
-                intersecting_features = [f for f in selected2.getFeatures(QgsFeatureRequest().setFilterFids(intersecting_ids)) if f.geometry().intersects(feature.geometry())]
+                intersecting_features = [
+                    f for f in selected2.getFeatures(QgsFeatureRequest().setFilterFids(intersecting_ids))
+                    if f.geometry().intersects(feature.geometry())
+                ]
 
         # Commit changes
         selected2.commitChanges()
 
-        
-        temp = QgsProcessingUtils.generateTempFilename('temp.shp')
-        
-        # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(selected2, out_db, 'utf-8', flow_network.crs(), 'ESRI Shapefile')
+        # Step 4: Save final output to file
+        QgsVectorFileWriter.writeAsVectorFormatV3(selected2, out_db, transform_context, save_options)
 
-        
-        FB_lines=processing.run("native:polygonstolines", {
+        # Further processing
+        FB_lines = processing.run("native:polygonstolines", {
             'INPUT': isAG1,
-            'OUTPUT': 'TEMPORARY_OUTPUT'
-        }, context=context, feedback=feedback)['OUTPUT']
+            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
 
 
-        select_within_distance=processing.run("native:selectwithindistance", {
+        temp2 = QgsProcessingUtils.generateTempFilename('temp2.shp')
+
+        # Fix geometries
+        stream_reach2 = processing.run("native:fixgeometries", {
+            'INPUT': stream_reach,
+            'OUTPUT': temp2}, context=context, feedback=feedback)['OUTPUT']
+        
+        temp3 = QgsProcessingUtils.generateTempFilename('temp3.shp')
+        
+
+        select_within_distance = processing.run("native:selectwithindistance", {
             'INPUT': selected2,
-            'REFERENCE': stream_reach,
+            'REFERENCE': stream_reach2,
             'DISTANCE': 25,
             'METHOD': 0,
-            'OUTPUT': 'TEMPORARY_OUTPUT'
-        }, context=context, feedback=feedback)['OUTPUT']
+            'OUTPUT': temp3}, context=context, feedback=feedback)['OUTPUT']
 
-        
-        # Remove selected features from line_layer_1
+        # Remove selected features
         select_within_distance.startEditing()
+        
         for feature in select_within_distance.getSelectedFeatures():
             select_within_distance.deleteFeature(feature.id())
+            
         select_within_distance.commitChanges()
-        
-        # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(select_within_distance, out_db, 'utf-8', flow_network.crs(), 'ESRI Shapefile')
-        
-        select_intersect=processing.run("native:selectbylocation", {
+
+
+        temp4 = QgsProcessingUtils.generateTempFilename('temp4.shp')        
+
+
+
+        QgsVectorFileWriter.writeAsVectorFormatV3(select_within_distance, temp4, transform_context, save_options)
+
+
+
+        select_intersect = processing.run("native:selectbylocation", {
             'INPUT': select_within_distance,
             'PREDICATE': [0],
             'INTERSECT': FB_lines,
             'METHOD': 0,
-            'OUTPUT':out_db
-        }, context=context, feedback=feedback)['OUTPUT']        
+            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
 
         select_intersect.startEditing()
+        
         for feature in select_intersect.getSelectedFeatures():
             select_intersect.deleteFeature(feature.id())
+            
         select_intersect.commitChanges()
-        
-        # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(select_intersect, out_db, 'utf-8', flow_network.crs(), 'ESRI Shapefile')
-        
-        
-        #Calculation of length
-        LengthDB=processing.run("native:fieldcalculator", {
-            'INPUT':select_intersect, 
-            'FIELD_NAME': "Length (m)",
-            'FIELD_TYPE': 1, 
-            'FORMULA':"length(@geometry)",
-            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
-        
-        # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(LengthDB, out_db, 'utf-8', flow_network.crs(), 'ESRI Shapefile')        
-        
 
-        return {'PotentialDB': LengthDB,'OutPoints': sorted}
+        QgsVectorFileWriter.writeAsVectorFormatV3(select_intersect, out_db, transform_context, save_options)
+
+        LengthDB = processing.run("native:fieldcalculator", {
+            'INPUT': select_intersect,
+            'FIELD_NAME': "Length (m)",
+            'FIELD_TYPE': 1,
+            'FORMULA': "length(@geometry)",
+            'OUTPUT': out_db}, context=context, feedback=feedback)['OUTPUT']
+
+
+        return {'PotentialDB': LengthDB}

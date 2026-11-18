@@ -28,7 +28,7 @@ class InstallDepProcessingAlgorithm(QgsProcessingAlgorithm):
         return 'install_dependencies'
 
     def displayName(self):
-        return '0a) Installing dependencies (admin rights)'
+        return '0)b Installing dependencies'
 
     def group(self):
         return 'DB simulator'
@@ -78,7 +78,7 @@ class InstallDepProcessingAlgorithm(QgsProcessingAlgorithm):
         else:
             feedback.pushInfo("Extension 'r.stream.order' is NOT installed.")
             
-            install.stream.order = processing.run(
+            install_stream_order = processing.run(
             "grass7:g.extension.manage",{
             'extension': 'r.stream.order',
             'operation':0},context=context,feedback=feedback)
@@ -90,7 +90,7 @@ class InstallDepProcessingAlgorithm(QgsProcessingAlgorithm):
         else:
             feedback.pushInfo("Extension 'r.stream.basins' is NOT installed.")
             
-            install.stream.basins = processing.run(
+            install_stream_basins = processing.run(
             "grass7:g.extension.manage",{
             'extension': 'r.stream.basins',
             'operation':0},context=context,feedback=feedback)

@@ -2,6 +2,8 @@ import os
 import shutil
 import tempfile
 import processing
+import json
+from pathlib import Path
 from qgis.PyQt.QtCore import QCoreApplication
 from processing.core.ProcessingConfig import ProcessingConfig
 from qgis.core import (QgsProcessing,
@@ -22,7 +24,7 @@ class InstallDepProcessingAlgorithm(QgsProcessingAlgorithm):
         return 'Installing_deps_2'
 
     def displayName(self):
-        return '0b) Installing dependencies (no admin rights)'
+        return '0)a Installing dependencies'
 
     def group(self):
         return 'DB simulator'
@@ -88,51 +90,128 @@ class InstallDepProcessingAlgorithm(QgsProcessingAlgorithm):
                     }, context=context, feedback=feedback)
                 feedback.pushInfo("Extension 'r.stream.basins' has been installed.")
 
-            scripts_path = ProcessingConfig.getSetting('SCRIPTS_FOLDERS')
-            parent_dir = os.path.dirname(scripts_path)
-            description_dir = os.path.join(parent_dir, 'GRASS descriptions')
+            
+            qgis_prefix = os.environ.get("QGIS_PREFIX_PATH", None)
+            algorithms_path = os.path.join(qgis_prefix,"python", "plugins", "grassprovider", "description")
+            
+            description_file = os.path.join (algorithms_path, "r.stream.extract.txt")
+            algo_path2=os.path.join (algorithms_path, "algorithms.json")
+            
+            
+            if os.path.exists(description_file):
 
-            r_order_txt = 'r.stream.order.txt'
-            r_basins_txt = 'r.stream.basins.txt'
 
-            r_order_file_path = os.path.join(description_dir, r_order_txt)
-            r_basins_file_path = os.path.join(description_dir, r_basins_txt)
 
-            grass_provider = QgsApplication.processingRegistry().providerById('grass7')
 
-            if grass_provider:
-                feedback.pushInfo("GRASS Provider is available.")
-                if hasattr(grass_provider, 'descriptionFolders'):
-                    description_folders = grass_provider.descriptionFolders
 
-                    for folder in description_folders:
-                        feedback.pushInfo(f"Checking write permissions for folder: {folder}")
-                        
-                        if has_write_permission(folder):
-                            feedback.pushInfo(f"Write permission granted for folder: {folder}")
+                scripts_path = ProcessingConfig.getSetting('SCRIPTS_FOLDERS')
+                parent_dir = os.path.dirname(scripts_path)
+                description_dir = os.path.join(parent_dir, 'GRASS descriptions')
 
-                            prefix_path = folder
-                            destination_r_order_desc = os.path.join(prefix_path, r_order_txt)
-                            destination_r_basins_desc = os.path.join(prefix_path, r_basins_txt)
+                r_order_txt = 'r.stream.order.txt'
+                r_basins_txt = 'r.stream.basins.txt'
 
-                            if os.path.exists(prefix_path):
+                r_order_file_path = os.path.join(description_dir, r_order_txt)
+                r_basins_file_path = os.path.join(description_dir, r_basins_txt)
+                
+                
+                feedback.pushInfo(f"Retrieving files from folder: {r_order_file_path}")
+                feedback.pushInfo(f"Retrieving files from folder: {r_basins_file_path}")
+
+                grass_provider = QgsApplication.processingRegistry().providerById('grass7')
+
+                if grass_provider:
+                    feedback.pushInfo("GRASS Provider is available.")
+                    
+                    if hasattr(grass_provider, 'descriptionFolders'):
+                        description_folders = grass_provider.descriptionFolders
+
+                        for folder in description_folders:
+                            feedback.pushInfo(f"Copying files to folder: {folder}")
+
+                            destination_r_order_desc = os.path.join(folder, r_order_txt)
+                            destination_r_basins_desc = os.path.join(folder, r_basins_txt)
+
+                            if os.path.exists(r_order_file_path) and os.path.exists(r_basins_file_path):
                                 try:
                                     shutil.copy2(r_order_file_path, destination_r_order_desc)
                                     feedback.pushInfo(f"File {r_order_txt} copied successfully to {destination_r_order_desc}")
+
                                     shutil.copy2(r_basins_file_path, destination_r_basins_desc)
                                     feedback.pushInfo(f"File {r_basins_txt} copied successfully to {destination_r_basins_desc}")
 
                                 except FileNotFoundError:
-                                    feedback.pushInfo(f"File {r_order_txt} not found in {r_order_file_path}")
-                                    feedback.pushInfo(f"File {r_basins_txt} not found in {r_basins_file_path}")
-
+                                    feedback.pushInfo(f"File {r_order_txt} or {r_basins_txt} not found in the project folder.")
                                 except Exception as e:
-                                    feedback.pushInfo(f"Error copying file: {e}")
-                        else:
-                            feedback.pushInfo(f"No write permission for folder: {folder}")
+                                    feedback.pushInfo(f"Error copying files: {e}")
 
+                            else:
+                                feedback.pushInfo(f"One or both description files are missing in the project folder.")
+                    else:
+                        feedback.pushInfo(f"ERROR: GRASS Provider does not have descriptionFolders attribute, CONTACT THE PROGRAMMER")
+
+                else:
+                    feedback.pushInfo("GRASS provider is not available.")
+                    
+            
+
+            elif os.path.exists(algo_path2):
+                
+                # Read current JSON
+                with open(algo_path2, "r") as f:
+                    data = json.load(f)
+
+                # Define new algorithms
+                new_algorithms = [
+                    {
+                        "name": "r.stream.order",
+                        "display_name": "r.stream.order",
+                        "command": "r.stream.order",
+                        "short_description": "Stream network order extraction",
+                        "group": "Raster (r.*)",
+                        "group_id": "raster",
+                        "ext_path": None,
+                        "hardcoded_strings": [],
+                        "parameters": [
+                            "QgsProcessingParameterRasterLayer|stream_ras|Streams raster (preferably from 'r.stream.extract')|None|False",
+                            "QgsProcessingParameterRasterLayer|direction|Flow direction raster|None|False",
+                            "*QgsProcessingParameterNumber|memory|Maximum memory to be used (in MB)|QgsProcessingParameterNumber.Integer|300|True|0|None",
+                            "QgsProcessingParameterRasterDestination|strahler|strahler|None|True"
+                        ]
+                    },
+                    {
+                        "name": "r.stream.basins",
+                        "display_name": "r.stream.basins",
+                        "command": "r.stream.basins",
+                        "short_description": "Stream basin extraction",
+                        "group": "Raster (r.*)",
+                        "group_id": "raster",
+                        "ext_path": None,
+                        "hardcoded_strings": [],
+                        "parameters": [
+                            "QgsProcessingParameterRasterLayer|direction|Flow direction raster|None|False",
+                            "QgsProcessingParameterRasterLayer|stream_raster|Streams raster (preferably from 'r.stream.extract')|None|True",
+                            "QgsProcessingParameterFeatureSource|points|Pour points layer|-1|None|True",
+                            "QgsProcessingParameterNumber|memory|Maximum memory to be used (in MB)|QgsProcessingParameterNumber.Integer|300|True|0|None",
+                            "QgsProcessingParameterRasterDestination|basins|Output basins raster map|None|True"
+                        ]
+                    }
+                ]
+
+                # Add new algorithms (avoid duplicates by checking "name")
+                existing_names = [alg["name"] for alg in data]
+                for alg in new_algorithms:
+                    if alg["name"] not in existing_names:
+                        data.append(alg)
+
+                # Save updated JSON
+                with open(algo_path2, "w") as f:
+                    json.dump(data, f, indent=2)
+
+                feedback.pushInfo("Algorithms added successfully.")
+                
             else:
-                feedback.pushInfo("GRASS provider is not available.")
+               feedback.pushInfo("ERROR: ALGORITHMS WERE NOT INSTALLED CORRECTLY, CONTACT THE PROGRAMMER")  
 
         except Exception as e:
             feedback.pushInfo(f"Error encountered: {e}")

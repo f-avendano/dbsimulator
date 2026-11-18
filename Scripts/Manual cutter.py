@@ -65,8 +65,6 @@ class ManualCutterAlgorithm(QgsProcessingAlgorithm):
     def processAlgorithm(self, parameters, context, feedback):
         # Get parameter values
         cut_lines = self.parameterAsVectorLayer(parameters, 'CutLines', context)
-        #dam_lines = self.parameterAsVectorLayer(parameters, 'DamLines', context)
-        #attribute_field = self.parameterAsString(parameters, self.ATTRIBUTE_FIELD, context)
         dem = self.parameterAsRasterLayer(parameters, 'DEM', context)
         output_new_dem = self.parameterAsOutputLayer(parameters, 'OutputNewDEM', context)
         output_fill_dem = self.parameterAsOutputLayer(parameters, 'OutputFillDEM', context)
@@ -143,7 +141,7 @@ class ManualCutterAlgorithm(QgsProcessingAlgorithm):
             output_new_dem = dem
 
         # Fill the NewDEM
-        output_filldem = processing.run("saga:fillsinksxxlwangliu", {
+        output_filldem = processing.run("sagang:fillsinksxxlwangliu", {
             'ELEV': output_new_dem,
             'MINSLOPE':0.0,
             'FILLED': 'TEMPORARY_OUTPUT',

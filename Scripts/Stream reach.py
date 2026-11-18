@@ -147,7 +147,8 @@ class StreamReachAlgorithm(QgsProcessingAlgorithm):
         
         '''HERE WE OBTAIN THE ABSOLUTE VALUES OF FLOWDIR OF GRASS GIS, SINCE IT HAS NEGATIVE VALUES'''
         
-        expression = f'(({d8_flow_dir.name()}@1 < 0) * -1*{d8_flow_dir.name()}@1 + ({d8_flow_dir.name()}@1 >= 0) *{d8_flow_dir.name()}@1)' 
+        expression = f'((\"{d8_flow_dir.name()}@1\" < 0) * -1 * \"{d8_flow_dir.name()}@1\" + (\"{d8_flow_dir.name()}@1\" >= 0) * \"{d8_flow_dir.name()}@1\")'
+
 
         
         flowdir_abs = processing.run("qgis:rastercalculator", {

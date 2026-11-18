@@ -83,26 +83,72 @@ class DBs(QgsProcessingAlgorithm):
         memory = self.parameterAsDouble(parameters, 'Memory', context)
         catchments = self.parameterAsOutputLayer(parameters, 'Catchments', context)
         depth = self.parameterAsOutputLayer(parameters, 'Depth', context)
-        
+
+
+
+
 
         
+        # List of potential field names for height
+        potential_height_fields = ['EmbankHgt', 'Height']
+        field_name_to_use = "Height (m)"  # New valid field name without special characters
         
+        # Get the existing field names
+        fields = locations.fields()
+        
+        # Find the first existing height field
+        existing_field = None
+        for field in fields:
+            if field.name() in potential_height_fields:
+                existing_field = field.name()
+                break
+
+        # If we found a field, use fieldcalculator to create a new field with a valid name
+        if existing_field:
+            feedback.pushInfo(f"Found existing field: {existing_field}. Creating new field '{field_name_to_use}'")
+            
+            # Step 1: Create a new field and populate it with the same values (temporary output)
+            renamed = processing.run("qgis:fieldcalculator", {
+                'INPUT': locations,
+                'FIELD_NAME': field_name_to_use,
+                'FIELD_TYPE': 1,
+                'FIELD_LENGTH': 10,
+                'FIELD_PRECISION': 3,
+                'NEW_FIELD': True,
+                'FORMULA': f'"{existing_field}"',
+                'OUTPUT': 'TEMPORARY_OUTPUT'
+            }, context=context, feedback=feedback)["OUTPUT"]
+            
+            feedback.pushInfo(f"New field '{field_name_to_use}' created and populated from '{existing_field}'.")
+
+            # Step 2: Optionally delete the old field (temporary output)
+            deleted = processing.run("qgis:deletecolumn", {
+                'INPUT': renamed,  # Use the renamed layer here
+                'COLUMN': [existing_field],  # List of columns to delete
+                'OUTPUT': 'TEMPORARY_OUTPUT'
+            }, context=context, feedback=feedback)["OUTPUT"]
+            
+            feedback.pushInfo(f"Old field '{existing_field}' deleted.")
+
+        else:
+            feedback.pushInfo("No valid height field found in the input layer.")
+            
+            deleted = locations
+
         feedback.pushInfo('''
-        
         ---------Calculating DB catchments raster -------------------
-        
         ''')
 
-
-        #Getting pour point coordinates of DBs
-
-        buffer= processing.run("native:buffer", {
-            'INPUT': locations,
-            'DISTANCE':1,
+        # Step 3: Now, run buffer on the `deleted` layer (or `renamed` if you didn’t delete the field)
+        buffer = processing.run("native:buffer", {
+            'INPUT': deleted,
+            'DISTANCE': 1,
             'SEGMENTS': 1,
             'END_CAP_STYLE': 2,
             'OUTPUT': 'TEMPORARY_OUTPUT'
-            }, context=context, feedback=feedback)["OUTPUT"]
+        }, context=context, feedback=feedback)["OUTPUT"]
+
+        feedback.pushInfo("Buffer operation completed.")
 
 
         points= processing.run("qgis:generatepointspixelcentroidsinsidepolygons", {
@@ -217,7 +263,7 @@ class DBs(QgsProcessingAlgorithm):
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)["OUTPUT"]
 
-        expression = f'(({fill_nodata}@1>0)*{fill_nodata}@1+({fill_nodata}@1=0)*{dem.name()}@1)'
+        expression = f'(({fill_nodata}@1>0)*{fill_nodata}@1+({fill_nodata}@1=0)*\"{dem.name()}@1\")'
         
 
 
@@ -226,14 +272,30 @@ class DBs(QgsProcessingAlgorithm):
             'LAYERS': [dem, fill_nodata],
             'OUTPUT': 'TEMPORARY_OUTPUT'
             }, context=context, feedback=feedback)["OUTPUT"]
+            
+            
+        saga_input = processing.run("sagang:importraster", {
+            'FILES': NewDEM,
+            'MULTIPLE': 0,
+            'SUBSETS': [],
+            'SELECTION': [],
+            'TRANSFORM': True,
+            'RESAMPLING': 0,       # nearest neighbour
+            'EXTENT_SHAPES':locations,
+            'EXTENT_BUFFER':0,
+            'GRIDS': 'TEMPORARY_OUTPUT'
+        }, context=context, feedback=feedback)["GRIDS"]
 
-        FilledNewDEM = processing.run("saga:fillsinksxxlwangliu", { ##WILL HAVE TO USE WANGLIU ONLY. EXTRA VALUES ARE GENERATED WHEN MIXING XXL AND NOT XXL
-            'ELEV': NewDEM,
+        FilledNewDEM = processing.run("sagang:fillsinksxxlwangliu", { ##WILL HAVE TO USE WANGLIU ONLY. EXTRA VALUES ARE GENERATED WHEN MIXING XXL AND NOT XXL
+            'ELEV': saga_input,
             'MINSLOPE':0.0,
             'FILLED': 'TEMPORARY_OUTPUT',
             }, context=context, feedback=feedback)["FILLED"]
 
+
         expression =f'\"{FilledNewDEM}@1\" - \"{dem.name()}@1\"'
+        #expression =f'\"{FilledNewDEM}@1\" - \"{saga_input}@1\"'
+        
         
         FillReg= processing.run("qgis:rastercalculator", {
             'EXPRESSION': expression,
@@ -310,10 +372,36 @@ class DBs(QgsProcessingAlgorithm):
             'METHOD': 1,
             'OUTPUT': 'TEMPORARY_OUTPUT'
         }, context=context, feedback=feedback)['OUTPUT']
+
+
+
+        area=processing.run("native:fieldcalculator", {
+            'INPUT':fixed, 
+            'FIELD_NAME': "Area (m2)",
+            'FIELD_TYPE': 1,
+            'FORMULA':"area(@geometry)",
+            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
+
+
+        expression = f'( ("Area (m2)" >=5))'
+
+
+        # delete_small = processing.run("native:extractbyexpression", {
+        #     'INPUT': area,
+        #     'EXPRESSION': expression,
+        #     'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']        
         
-        
+
+        fixed2=processing.run("native:fixgeometries", {
+            'INPUT': area,
+            'METHOD': 1,
+            'OUTPUT': 'TEMPORARY_OUTPUT'
+        }, context=context, feedback=feedback)['OUTPUT']
+
+
+    
         dissolve=processing.run("native:dissolve", {
-            'INPUT': fixed,
+            'INPUT': fixed2,
             'FIELD': 'DB_ID',
             'OUTPUT': 'TEMPORARY_OUTPUT'
         }, context=context, feedback=feedback)['OUTPUT']
@@ -321,7 +409,7 @@ class DBs(QgsProcessingAlgorithm):
         
         volume = processing.run("native:zonalstatisticsfb", {
             'INPUT': dissolve,
-            'INPUT_RASTER': FillRegCM, ##FillRegCM
+            'INPUT_RASTER': FillRegCM,
             'RASTER_BAND': 1,
             'STATISTICS': 1,
             'OUTPUT': 'TEMPORARY_OUTPUT'
@@ -331,23 +419,31 @@ class DBs(QgsProcessingAlgorithm):
         volume2=processing.run("native:fieldcalculator", {
             'INPUT':volume, 
             'FIELD_NAME': "Volume(m3)",
-            'FIELD_TYPE': 0,
+            'FIELD_TYPE': 1,
             'FORMULA':"_sum",
             'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
         
 
-        
-        area=processing.run("native:fieldcalculator", {
-            'INPUT':volume2, 
-            'FIELD_NAME': "Area (m2)",
-            'FIELD_TYPE': 0,
-            'FORMULA':"area(@geometry)",
-            'OUTPUT': 'TEMPORARY_OUTPUT'}, context=context, feedback=feedback)['OUTPUT']
-
         smoothed=processing.run("native:smoothgeometry", { 
-            'INPUT': area,
+            'INPUT': volume2,
             'OUTPUT': 'TEMPORARY_OUTPUT'
         }, context=context, feedback=feedback)['OUTPUT']
+
+
+
+        # Recalculate area AFTER dissolve and smoothing, for the full pond footprint.
+        # The earlier area value belongs to an individual pre-dissolve polygon.
+        smoothed.startEditing()
+        area_idx = smoothed.fields().indexFromName('Area (m2)')
+        if area_idx < 0:
+            smoothed.rollBack()
+            raise QgsProcessingException('Missing Area (m2) field in pond output')
+        for pond_feature in smoothed.getFeatures():
+            smoothed.changeAttributeValue(
+                pond_feature.id(), area_idx, float(pond_feature.geometry().area())
+            )
+        if not smoothed.commitChanges():
+            raise QgsProcessingException('Could not save recalculated pond areas')
 
         # Open editing session
         smoothed.startEditing()
@@ -377,8 +473,18 @@ class DBs(QgsProcessingAlgorithm):
         # Close editing session and save changes
         smoothed.commitChanges() 
 
-        # Save the renamed layer to the final output
-        QgsVectorFileWriter.writeAsVectorFormat(smoothed, catchments, 'utf-8', smoothed.crs(), 'ESRI Shapefile')
+
+
+        transform_context = QgsProject.instance().transformContext()
+        save_options = QgsVectorFileWriter.SaveVectorOptions()
+        save_options.driverName = "ESRI Shapefile"
+        save_options.fileEncoding = "UTF-8"
+
+        
+        QgsVectorFileWriter.writeAsVectorFormatV3(smoothed, catchments, transform_context, save_options)
+
+         
+         
 
         
         ratio=processing.run("native:fieldcalculator", {
@@ -406,6 +512,9 @@ class DBs(QgsProcessingAlgorithm):
             'NO_DATA': 0,
             'OUTPUT': depth
         }, context=context, feedback=feedback)['OUTPUT']
+
         
 
-        return {'Catchments':sorted, 'Depth': nodata}
+        
+
+        return {'Catchments':sorted,'Depth': nodata}
